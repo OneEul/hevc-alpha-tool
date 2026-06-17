@@ -1,0 +1,68 @@
+# (standalone) 투명 배경 WebM(VP9-alpha) → iOS Safari 호환 HEVC-with-alpha(.mov) 1회 변환 워크플로우.
+# HEVC-alpha 인코딩은 macOS VideoToolbox 가 필수라, 맥 없이 GitHub Actions 의 macOS 러너에서 변환해
+# 결과 .mov 를 아티팩트로 받기 위한 용도. 개인 GitHub 레포에 업로드해 수동 실행한다.
+#
+# 개인 레포 구성:
+#   <repo>/
+#     ├─ .github/workflows/hevc-alpha-banner.yml   (이 파일)
+#     └─ buyer-banner-illust.webm                  (변환할 원본 — 레포 루트)
+#
+# 실행: 레포 Actions 탭 → "Convert WebM to HEVC-alpha" → Run workflow → 끝나면 Artifacts 다운로드.
+name: Convert WebM to HEVC-alpha
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_file:
+        description: "변환할 WebM 파일명 (레포 루트 기준)"
+        required: false
+        default: "buyer-banner-illust.webm"
+      alpha_quality:
+        description: "Alpha 품질 (0.0~1.0, 높을수록 가장자리 선명·용량 ↑)"
+        required: false
+        default: "0.9"
+
+permissions:
+  contents: read
+
+jobs:
+  convert:
+    runs-on: macos-15   # VideoToolbox(HEVC-alpha) 지원 macOS 러너
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ffmpeg (Homebrew)
+        run: brew install ffmpeg
+
+      - name: Verify hevc_videotoolbox encoder
+        run: ffmpeg -hide_banner -encoders | grep hevc_videotoolbox
+
+      # VP9-alpha 디코딩은 libvpx-vp9 로 강제 → hevc_videotoolbox 알파 보존 인코딩(-alpha_quality>0),
+      # Safari 인식 위해 -tag:v hvc1, 스트리밍 위해 +faststart.
+      - name: Convert VP9-alpha WebM -> HEVC-alpha MOV
+        env:
+          IN: ${{ github.event.inputs.input_file }}
+          ALPHA_Q: ${{ github.event.inputs.alpha_quality }}
+        run: |
+          ffmpeg -y -hide_banner \
+            -c:v libvpx-vp9 -i "$IN" \
+            -c:v hevc_videotoolbox -allow_sw 1 -alpha_quality "$ALPHA_Q" \
+            -tag:v hvc1 -movflags +faststart -an \
+            "${IN%.webm}.mov"
+
+      - name: Probe output (codec/tag/size 확인)
+        env:
+          IN: ${{ github.event.inputs.input_file }}
+        run: |
+          ffprobe -hide_banner -v error -select_streams v:0 \
+            -show_entries stream=codec_name,codec_tag_string,width,height \
+            -of default=noprint_wrappers=1 "${IN%.webm}.mov"
+          ls -lh "${IN%.webm}.mov"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hevc-alpha-mov
+          path: "*.mov"
+          retention-days: 14
